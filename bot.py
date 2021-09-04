@@ -1,4 +1,4 @@
-__version__ = "3.9.5"
+__version__ = "3.10.1"
 
 
 import asyncio
@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import signal
+import string
 import sys
 import typing
 from datetime import datetime
@@ -74,6 +75,7 @@ class ModmailBot(commands.Bot):
         self.loaded_cogs = ["cogs.modmail", "cogs.plugins", "cogs.utility"]
         self._connected = asyncio.Event()
         self.start_time = datetime.utcnow()
+        self._started = False
 
         self.config = ConfigManager(self)
         self.config.populate_cache()
@@ -122,12 +124,9 @@ class ModmailBot(commands.Bot):
 
     def startup(self):
         logger.line()
-        if os.name != "nt":
-            logger.info("┌┬┐┌─┐┌┬┐┌┬┐┌─┐┬┬")
-            logger.info("││││ │ │││││├─┤││")
-            logger.info("┴ ┴└─┘─┴┘┴ ┴┴ ┴┴┴─┘")
-        else:
-            logger.info("MODMAIL")
+        logger.info("┌┬┐┌─┐┌┬┐┌┬┐┌─┐┬┬")
+        logger.info("││││ │ │││││├─┤││")
+        logger.info("┴ ┴└─┘─┴┘┴ ┴┴ ┴┴┴─┘")
         logger.info("v%s", __version__)
         logger.info("Authors: kyb3r, fourjr, Taaku18")
         logger.line()
@@ -237,6 +236,7 @@ class ModmailBot(commands.Bot):
                 if self._session:
                     await self._session.close()
 
+        # noinspection PyUnusedLocal
         def stop_loop_on_completion(f):
             loop.stop()
 
@@ -286,7 +286,6 @@ class ModmailBot(commands.Bot):
                     loop.run_until_complete(loop.shutdown_asyncgens())
             finally:
                 logger.info("Closing the event loop.")
-                loop.close()
 
         if not future.cancelled():
             try:
@@ -536,6 +535,13 @@ class ModmailBot(commands.Bot):
             logger.error("Logging out due to invalid GUILD_ID.")
             return await self.close()
 
+        if self._started:
+            # Bot has started before
+            logger.line()
+            logger.warning("Bot restarted due to internal discord reloading.")
+            logger.line()
+            return
+
         logger.line()
         logger.debug("Client ready.")
         logger.info("Logged in as: %s", self.user)
@@ -636,6 +642,8 @@ class ModmailBot(commands.Bot):
             )
             logger.warning("If the external servers are valid, you may ignore this message.")
 
+        self._started = True
+
     async def convert_emoji(self, name: str) -> str:
         ctx = SimpleNamespace(bot=self, guild=self.modmail_guild)
         converter = commands.EmojiConverter()
@@ -644,7 +652,7 @@ class ModmailBot(commands.Bot):
             try:
                 name = await converter.convert(ctx, name.strip(":"))
             except commands.BadArgument as e:
-                logger.warning("%s is not a valid emoji. %s.", e)
+                logger.warning("%s is not a valid emoji. %s.", name, e)
                 raise
         return name
 
@@ -796,7 +804,7 @@ class ModmailBot(commands.Bot):
         *,
         channel: discord.TextChannel = None,
         send_message: bool = False,
-    ) -> typing.Tuple[bool, str]:
+    ) -> bool:
 
         member = self.guild.get_member(author.id)
         if member is None:
@@ -875,7 +883,9 @@ class ModmailBot(commands.Bot):
         return
 
     @staticmethod
-    async def add_reaction(msg, reaction: discord.Reaction) -> bool:
+    async def add_reaction(
+        msg, reaction: typing.Union[discord.Emoji, discord.Reaction, discord.PartialEmoji, str]
+    ) -> bool:
         if reaction != "disable":
             try:
                 await msg.add_reaction(reaction)
@@ -941,6 +951,15 @@ class ModmailBot(commands.Bot):
                 logger.error("Failed to send message:", exc_info=True)
                 await self.add_reaction(message, blocked_emoji)
             else:
+                for user in thread.recipients:
+                    # send to all other recipients
+                    if user != message.author:
+                        try:
+                            await thread.send(message, user)
+                        except Exception:
+                            # silently ignore
+                            logger.error("Failed to send message:", exc_info=True)
+
                 await self.add_reaction(message, sent_emoji)
                 self.dispatch("thread_reply", thread, False, message, False, False)
 
@@ -1013,20 +1032,20 @@ class ModmailBot(commands.Bot):
         alias = self.auto_triggers[trigger]
 
         ctxs = []
+
         if alias is not None:
             ctxs = []
             aliases = normalize_alias(alias)
             if not aliases:
                 logger.warning("Alias %s is invalid as called in autotrigger.", invoker)
 
-            for alias in aliases:
-                view = StringView(invoked_prefix + alias)
-                ctx_ = cls(prefix=self.prefix, view=view, bot=self, message=message)
-                ctx_.thread = thread
-                discord.utils.find(view.skip_string, await self.get_prefix())
-                ctx_.invoked_with = view.get_word().lower()
-                ctx_.command = self.all_commands.get(ctx_.invoked_with)
-                ctxs += [ctx_]
+        message.author = thread.recipient  # Allow for get_contexts to work
+
+        for alias in aliases:
+            message.content = invoked_prefix + alias
+            ctxs += await self.get_contexts(message)
+
+        message.author = self.modmail_guild.me  # Fix message so commands execute properly
 
         for ctx in ctxs:
             if ctx.command:
@@ -1132,6 +1151,7 @@ class ModmailBot(commands.Bot):
             cmd = message.content[len(self.prefix) :].strip()
 
             # Process snippets
+            cmd = cmd.lower()
             if cmd in self.snippets:
                 snippet = self.snippets[cmd]
                 if self.config["anonymous_snippets"]:
@@ -1193,9 +1213,10 @@ class ModmailBot(commands.Bot):
 
             thread = await self.threads.find(channel=channel)
             if thread is not None and thread.recipient:
-                if await self.is_blocked(thread.recipient):
-                    return
-                await thread.recipient.trigger_typing()
+                for user in thread.recipients:
+                    if await self.is_blocked(user):
+                        continue
+                    await user.trigger_typing()
 
     async def handle_reaction_events(self, payload):
         user = self.get_user(payload.user_id)
@@ -1244,7 +1265,7 @@ class ModmailBot(commands.Bot):
             if not thread.recipient.dm_channel:
                 await thread.recipient.create_dm()
             try:
-                linked_message = await thread.find_linked_message_from_dm(message, either_direction=True)
+                linked_messages = await thread.find_linked_message_from_dm(message, either_direction=True)
             except ValueError as e:
                 logger.warning("Failed to find linked message for reactions: %s", e)
                 return
@@ -1253,64 +1274,68 @@ class ModmailBot(commands.Bot):
             if not thread:
                 return
             try:
-                _, linked_message = await thread.find_linked_messages(message.id, either_direction=True)
+                _, *linked_messages = await thread.find_linked_messages(message.id, either_direction=True)
             except ValueError as e:
                 logger.warning("Failed to find linked message for reactions: %s", e)
                 return
 
-        if self.config["transfer_reactions"] and linked_message is not None:
+        if self.config["transfer_reactions"] and linked_messages is not [None]:
             if payload.event_type == "REACTION_ADD":
-                if await self.add_reaction(linked_message, reaction):
-                    await self.add_reaction(message, reaction)
+                for msg in linked_messages:
+                    await self.add_reaction(msg, reaction)
+                await self.add_reaction(message, reaction)
             else:
                 try:
-                    await linked_message.remove_reaction(reaction, self.user)
+                    for msg in linked_messages:
+                        await msg.remove_reaction(reaction, self.user)
                     await message.remove_reaction(reaction, self.user)
                 except (discord.HTTPException, discord.InvalidArgument) as e:
                     logger.warning("Failed to remove reaction: %s", e)
 
-    async def on_raw_reaction_add(self, payload):
-        await self.handle_reaction_events(payload)
-
+    async def handle_react_to_contact(self, payload):
         react_message_id = tryint(self.config.get("react_to_contact_message"))
         react_message_emoji = self.config.get("react_to_contact_emoji")
-        if all((react_message_id, react_message_emoji)):
-            if payload.message_id == react_message_id:
-                if payload.emoji.is_unicode_emoji():
-                    emoji_fmt = payload.emoji.name
-                else:
-                    emoji_fmt = f"<:{payload.emoji.name}:{payload.emoji.id}>"
+        if not all((react_message_id, react_message_emoji)) or payload.message_id != react_message_id:
+            return
+        if payload.emoji.is_unicode_emoji():
+            emoji_fmt = payload.emoji.name
+        else:
+            emoji_fmt = f"<:{payload.emoji.name}:{payload.emoji.id}>"
 
-                if emoji_fmt == react_message_emoji:
-                    channel = self.get_channel(payload.channel_id)
-                    member = channel.guild.get_member(payload.user_id)
-                    if not member.bot:
-                        message = await channel.fetch_message(payload.message_id)
-                        await message.remove_reaction(payload.emoji, member)
-                        await message.add_reaction(emoji_fmt)  # bot adds as well
+        if emoji_fmt != react_message_emoji:
+            return
+        channel = self.get_channel(payload.channel_id)
+        member = channel.guild.get_member(payload.user_id)
+        if member.bot:
+            return
+        message = await channel.fetch_message(payload.message_id)
+        await message.remove_reaction(payload.emoji, member)
+        await message.add_reaction(emoji_fmt)  # bot adds as well
 
-                        if self.config["dm_disabled"] in (
-                            DMDisabled.NEW_THREADS,
-                            DMDisabled.ALL_THREADS,
-                        ):
-                            embed = discord.Embed(
-                                title=self.config["disabled_new_thread_title"],
-                                color=self.error_color,
-                                description=self.config["disabled_new_thread_response"],
-                            )
-                            embed.set_footer(
-                                text=self.config["disabled_new_thread_footer"],
-                                icon_url=self.guild.icon_url,
-                            )
-                            logger.info(
-                                "A new thread using react to contact was blocked from %s due to disabled Modmail.",
-                                member,
-                            )
-                            return await member.send(embed=embed)
+        if self.config["dm_disabled"] in (DMDisabled.NEW_THREADS, DMDisabled.ALL_THREADS):
+            embed = discord.Embed(
+                title=self.config["disabled_new_thread_title"],
+                color=self.error_color,
+                description=self.config["disabled_new_thread_response"],
+            )
+            embed.set_footer(
+                text=self.config["disabled_new_thread_footer"],
+                icon_url=self.guild.icon_url,
+            )
+            logger.info(
+                "A new thread using react to contact was blocked from %s due to disabled Modmail.",
+                member,
+            )
+            return await member.send(embed=embed)
 
-                        ctx = await self.get_context(message)
-                        ctx.author = member
-                        await ctx.invoke(self.get_command("contact"), user=member, manual_trigger=False)
+        ctx = await self.get_context(message)
+        await ctx.invoke(self.get_command("contact"), user=member, manual_trigger=False)
+
+    async def on_raw_reaction_add(self, payload):
+        await asyncio.gather(
+            self.handle_reaction_events(payload),
+            self.handle_react_to_contact(payload),
+        )
 
     async def on_raw_reaction_remove(self, payload):
         if self.config["transfer_reactions"]:
@@ -1390,11 +1415,12 @@ class ModmailBot(commands.Bot):
             if not thread:
                 return
             try:
-                message = await thread.find_linked_message_from_dm(message)
+                message = await thread.find_linked_message_from_dm(message, get_thread_channel=True)
             except ValueError as e:
                 if str(e) != "Thread channel message not found.":
                     logger.debug("Failed to find linked message to delete: %s", e)
                 return
+            message = message[0]
             embed = message.embeds[0]
             embed.set_footer(text=f"{embed.footer.text} (deleted)", icon_url=embed.footer.icon_url)
             await message.edit(embed=embed)
@@ -1405,13 +1431,6 @@ class ModmailBot(commands.Bot):
 
         thread = await self.threads.find(channel=message.channel)
         if not thread:
-            return
-
-        audit_logs = self.modmail_guild.audit_logs(limit=10, action=discord.AuditLogAction.message_delete)
-
-        entry = await audit_logs.find(lambda a: a.target == self.user)
-
-        if entry is None:
             return
 
         try:
@@ -1457,7 +1476,7 @@ class ModmailBot(commands.Bot):
         logger.error("Unexpected exception:", exc_info=sys.exc_info())
 
     async def on_command_error(self, context, exception):
-        if isinstance(exception, commands.BadArgument):
+        if isinstance(exception, (commands.BadArgument, commands.BadUnionArgument)):
             await context.trigger_typing()
             await context.send(embed=discord.Embed(color=self.error_color, description=str(exception)))
         elif isinstance(exception, commands.CommandNotFound):
@@ -1625,6 +1644,36 @@ class ModmailBot(commands.Bot):
             logger.warning("GitHub access token not found.")
             logger.warning("Autoupdates disabled.")
             self.autoupdate_loop.cancel()
+
+    def format_channel_name(self, author, exclude_channel=None, force_null=False):
+        """Sanitises a username for use with text channel names
+
+        Placed in main bot class to be extendable to plugins"""
+        guild = self.modmail_guild
+
+        if force_null:
+            name = new_name = "null"
+        else:
+            if self.config["use_user_id_channel_name"]:
+                name = new_name = str(author.id)
+            elif self.config["use_timestamp_channel_name"]:
+                name = new_name = author.created_at.isoformat(sep="-", timespec="minutes")
+            else:
+                name = author.name.lower()
+                if force_null:
+                    name = "null"
+
+                name = new_name = (
+                    "".join(l for l in name if l not in string.punctuation and l.isprintable()) or "null"
+                ) + f"-{author.discriminator}"
+
+        counter = 1
+        existed = set(c.name for c in guild.text_channels if c != exclude_channel)
+        while new_name in existed:
+            new_name = f"{name}_{counter}"  # multiple channels with same name
+            counter += 1
+
+        return new_name
 
 
 def main():

@@ -19,8 +19,20 @@ extend-exclude = '''
 )
 '''
 
-[tool.pylint.messages_control]
-disable = "C0330, C0326"
+[tool.poetry]
+name = 'Modmail'
+version = '3.10.1'
+description = "Modmail is similar to Reddit's Modmail, both in functionality and purpose. It serves as a shared inbox for server staff to communicate with their users in a seamless way."
+license = 'AGPL-3.0-only'
+authors = [
+    'kyb3r <noemail@example.com>',
+    '4jr <noemail@example.com>',
+    'Taki <noemail@example.com>'
+]
+readme = 'README.md'
+repository = 'https://github.com/kyb3r/modmail'
+homepage = 'https://github.com/kyb3r/modmail'
+keywords = ['discord', 'modmail']
 
 [tool.pylint.format]
 max-line-length = "110"

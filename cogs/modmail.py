@@ -206,7 +206,13 @@ class Modmail(commands.Cog):
         {prefix}snippet add "two word" this is a two word snippet.
         ```
         """
-        if name in self.bot.snippets:
+        if self.bot.get_command(name):
+            embed = discord.Embed(
+                title="Error",
+                color=self.bot.error_color,
+                description=f"A command with the same name already exists: `{name}`.",
+            )
+        elif name in self.bot.snippets:
             embed = discord.Embed(
                 title="Error",
                 color=self.bot.error_color,
@@ -671,6 +677,354 @@ class Modmail(commands.Cog):
         await ctx.message.pin()
         await self.bot.add_reaction(ctx.message, sent_emoji)
 
+    @commands.command(usage="<users_or_roles...> [options]", cooldown_after_parsing=True)
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.thread_only()
+    @commands.cooldown(1, 600, BucketType.channel)
+    async def adduser(self, ctx, *users_arg: Union[discord.Member, discord.Role, str]):
+        """Adds a user to a modmail thread
+
+        `options` can be `silent` or `silently`.
+        """
+        silent = False
+        users = []
+        for u in users_arg:
+            if isinstance(u, str):
+                if "silent" in u or "silently" in u:
+                    silent = True
+            elif isinstance(u, discord.Role):
+                users += u.members
+            elif isinstance(u, discord.Member):
+                users.append(u)
+
+        for u in users:
+            # u is a discord.Member
+            curr_thread = await self.bot.threads.find(recipient=u)
+            if curr_thread == ctx.thread:
+                users.remove(u)
+                continue
+
+            if curr_thread:
+                em = discord.Embed(
+                    title="Error",
+                    description=f"{u.mention} is already in a thread: {curr_thread.channel.mention}.",
+                    color=self.bot.error_color,
+                )
+                await ctx.send(embed=em)
+                ctx.command.reset_cooldown(ctx)
+                return
+
+        if not users:
+            em = discord.Embed(
+                title="Error",
+                description="All users are already in the thread.",
+                color=self.bot.error_color,
+            )
+            await ctx.send(embed=em)
+            ctx.command.reset_cooldown(ctx)
+            return
+
+        if len(users + ctx.thread.recipients) > 5:
+            em = discord.Embed(
+                title="Error",
+                description="Only 5 users are allowed in a group conversation",
+                color=self.bot.error_color,
+            )
+            await ctx.send(embed=em)
+            ctx.command.reset_cooldown(ctx)
+            return
+
+        if not silent:
+            description = self.bot.formatter.format(
+                self.bot.config["private_added_to_group_response"], moderator=ctx.author
+            )
+            em = discord.Embed(
+                title=self.bot.config["private_added_to_group_title"],
+                description=description,
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+            em.set_footer(text=str(ctx.author), icon_url=ctx.author.avatar_url)
+            for u in users:
+                await u.send(embed=em)
+
+            description = self.bot.formatter.format(
+                self.bot.config["public_added_to_group_response"],
+                moderator=ctx.author,
+                users=", ".join(u.name for u in users),
+            )
+            em = discord.Embed(
+                title=self.bot.config["public_added_to_group_title"],
+                description=description,
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+            em.set_footer(text=f"{users[0]}", icon_url=users[0].avatar_url)
+
+            for i in ctx.thread.recipients:
+                if i not in users:
+                    await i.send(embed=em)
+
+        await ctx.thread.add_users(users)
+        sent_emoji, _ = await self.bot.retrieve_emoji()
+        await self.bot.add_reaction(ctx.message, sent_emoji)
+
+    @commands.command(usage="<users_or_roles...> [options]", cooldown_after_parsing=True)
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.thread_only()
+    @commands.cooldown(1, 600, BucketType.channel)
+    async def removeuser(self, ctx, *users_arg: Union[discord.Member, discord.Role, str]):
+        """Removes a user from a modmail thread
+
+        `options` can be `silent` or `silently`.
+        """
+        silent = False
+        users = []
+        for u in users_arg:
+            if isinstance(u, str):
+                if "silent" in u or "silently" in u:
+                    silent = True
+            elif isinstance(u, discord.Role):
+                users += u.members
+            elif isinstance(u, discord.Member):
+                users.append(u)
+
+        for u in users:
+            # u is a discord.Member
+            curr_thread = await self.bot.threads.find(recipient=u)
+            if ctx.thread != curr_thread:
+                em = discord.Embed(
+                    title="Error",
+                    description=f"{u.mention} is not in this thread.",
+                    color=self.bot.error_color,
+                )
+                await ctx.send(embed=em)
+                ctx.command.reset_cooldown(ctx)
+                return
+            elif ctx.thread.recipient == u:
+                em = discord.Embed(
+                    title="Error",
+                    description=f"{u.mention} is the main recipient of the thread and cannot be removed.",
+                    color=self.bot.error_color,
+                )
+                await ctx.send(embed=em)
+                ctx.command.reset_cooldown(ctx)
+                return
+
+        if not silent:
+            description = self.bot.formatter.format(
+                self.bot.config["private_removed_from_group_response"], moderator=ctx.author
+            )
+            em = discord.Embed(
+                title=self.bot.config["private_removed_from_group_title"],
+                description=description,
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+            em.set_footer(text=str(ctx.author), icon_url=ctx.author.avatar_url)
+            for u in users:
+                await u.send(embed=em)
+
+            description = self.bot.formatter.format(
+                self.bot.config["public_removed_from_group_response"],
+                moderator=ctx.author,
+                users=", ".join(u.name for u in users),
+            )
+            em = discord.Embed(
+                title=self.bot.config["public_removed_from_group_title"],
+                description=description,
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+            em.set_footer(text=f"{users[0]}", icon_url=users[0].avatar_url)
+
+            for i in ctx.thread.recipients:
+                if i not in users:
+                    await i.send(embed=em)
+
+        await ctx.thread.remove_users(users)
+        sent_emoji, _ = await self.bot.retrieve_emoji()
+        await self.bot.add_reaction(ctx.message, sent_emoji)
+
+    @commands.command(usage="<users_or_roles...> [options]", cooldown_after_parsing=True)
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.thread_only()
+    @commands.cooldown(1, 600, BucketType.channel)
+    async def anonadduser(self, ctx, *users_arg: Union[discord.Member, discord.Role, str]):
+        """Adds a user to a modmail thread anonymously
+
+        `options` can be `silent` or `silently`.
+        """
+        silent = False
+        users = []
+        for u in users_arg:
+            if isinstance(u, str):
+                if "silent" in u or "silently" in u:
+                    silent = True
+            elif isinstance(u, discord.Role):
+                users += u.members
+            elif isinstance(u, discord.Member):
+                users.append(u)
+
+        for u in users:
+            curr_thread = await self.bot.threads.find(recipient=u)
+            if curr_thread == ctx.thread:
+                users.remove(u)
+                continue
+
+            if curr_thread:
+                em = discord.Embed(
+                    title="Error",
+                    description=f"{u.mention} is already in a thread: {curr_thread.channel.mention}.",
+                    color=self.bot.error_color,
+                )
+                await ctx.send(embed=em)
+                ctx.command.reset_cooldown(ctx)
+                return
+
+        if not users:
+            em = discord.Embed(
+                title="Error",
+                description="All users are already in the thread.",
+                color=self.bot.error_color,
+            )
+            await ctx.send(embed=em)
+            ctx.command.reset_cooldown(ctx)
+            return
+
+        if not silent:
+            em = discord.Embed(
+                title=self.bot.config["private_added_to_group_title"],
+                description=self.bot.config["private_added_to_group_description_anon"],
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+
+            tag = self.bot.config["mod_tag"]
+            if tag is None:
+                tag = str(get_top_hoisted_role(ctx.author))
+            name = self.bot.config["anon_username"]
+            if name is None:
+                name = tag
+            avatar_url = self.bot.config["anon_avatar_url"]
+            if avatar_url is None:
+                avatar_url = self.bot.guild.icon_url
+            em.set_footer(text=name, icon_url=avatar_url)
+
+            for u in users:
+                await u.send(embed=em)
+
+            description = self.bot.formatter.format(
+                self.bot.config["public_added_to_group_description_anon"],
+                users=", ".join(u.name for u in users),
+            )
+            em = discord.Embed(
+                title=self.bot.config["public_added_to_group_title"],
+                description=description,
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+            em.set_footer(text=f"{users[0]}", icon_url=users[0].avatar_url)
+
+            for i in ctx.thread.recipients:
+                if i not in users:
+                    await i.send(embed=em)
+
+        await ctx.thread.add_users(users)
+        sent_emoji, _ = await self.bot.retrieve_emoji()
+        await self.bot.add_reaction(ctx.message, sent_emoji)
+
+    @commands.command(usage="<users_or_roles...> [options]", cooldown_after_parsing=True)
+    @checks.has_permissions(PermissionLevel.SUPPORTER)
+    @checks.thread_only()
+    @commands.cooldown(1, 600, BucketType.channel)
+    async def anonremoveuser(self, ctx, *users_arg: Union[discord.Member, discord.Role, str]):
+        """Removes a user from a modmail thread anonymously
+
+        `options` can be `silent` or `silently`.
+        """
+        silent = False
+        users = []
+        for u in users_arg:
+            if isinstance(u, str):
+                if "silent" in u or "silently" in u:
+                    silent = True
+            elif isinstance(u, discord.Role):
+                users += u.members
+            elif isinstance(u, discord.Member):
+                users.append(u)
+
+        for u in users:
+            curr_thread = await self.bot.threads.find(recipient=u)
+            if ctx.thread != curr_thread:
+                em = discord.Embed(
+                    title="Error",
+                    description=f"{u.mention} is not in this thread.",
+                    color=self.bot.error_color,
+                )
+                await ctx.send(embed=em)
+                ctx.command.reset_cooldown(ctx)
+                return
+            elif ctx.thread.recipient == u:
+                em = discord.Embed(
+                    title="Error",
+                    description=f"{u.mention} is the main recipient of the thread and cannot be removed.",
+                    color=self.bot.error_color,
+                )
+                await ctx.send(embed=em)
+                ctx.command.reset_cooldown(ctx)
+                return
+
+        if not silent:
+            em = discord.Embed(
+                title=self.bot.config["private_removed_from_group_title"],
+                description=self.bot.config["private_removed_from_group_description_anon"],
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+
+            tag = self.bot.config["mod_tag"]
+            if tag is None:
+                tag = str(get_top_hoisted_role(ctx.author))
+            name = self.bot.config["anon_username"]
+            if name is None:
+                name = tag
+            avatar_url = self.bot.config["anon_avatar_url"]
+            if avatar_url is None:
+                avatar_url = self.bot.guild.icon_url
+            em.set_footer(text=name, icon_url=avatar_url)
+
+            for u in users:
+                await u.send(embed=em)
+
+            description = self.bot.formatter.format(
+                self.bot.config["public_removed_from_group_description_anon"],
+                users=", ".join(u.name for u in users),
+            )
+            em = discord.Embed(
+                title=self.bot.config["public_removed_from_group_title"],
+                description=description,
+                color=self.bot.main_color,
+            )
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+            em.set_footer(text=f"{users[0]}", icon_url=users[0].avatar_url)
+
+            for i in ctx.thread.recipients:
+                if i not in users:
+                    await i.send(embed=em)
+
+        await ctx.thread.remove_users(users)
+        sent_emoji, _ = await self.bot.retrieve_emoji()
+        await self.bot.add_reaction(ctx.message, sent_emoji)
+
     @commands.group(invoke_without_command=True)
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def logs(self, ctx, *, user: User = None):
@@ -818,7 +1172,9 @@ class Modmail(commands.Cog):
         Supports attachments and images as well as
         automatically embedding image URLs.
         """
+
         ctx.message.content = msg
+
         async with ctx.typing():
             await ctx.thread.reply(ctx.message)
 
@@ -970,14 +1326,14 @@ class Modmail(commands.Cog):
     @checks.has_permissions(PermissionLevel.REGULAR)
     async def selfcontact(self, ctx):
         """Creates a thread with yourself"""
-        await ctx.invoke(self.contact, user=ctx.author)
+        await ctx.invoke(self.contact, users=[ctx.author])
 
     @commands.command(usage="<user> [category] [options]")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     async def contact(
         self,
         ctx,
-        user: Union[discord.Member, discord.User],
+        users: commands.Greedy[Union[discord.Member, discord.User, discord.Role]],
         *,
         category: Union[SimilarCategoryConverter, str] = None,
         manual_trigger=True,
@@ -989,69 +1345,118 @@ class Modmail(commands.Cog):
         will be created in that specified category.
 
         `category`, if specified, may be a category ID, mention, or name.
-        `user` may be a user ID, mention, or name.
-        `options` can be `silent`
+        `users` may be a user ID, mention, or name. If multiple users are specified, a group thread will start.
+        A maximum of 5 users are allowed.
+        `options` can be `silent` or `silently`.
         """
         silent = False
         if isinstance(category, str):
             if "silent" in category or "silently" in category:
                 silent = True
-            category = None
+                category = category.strip("silently").strip("silent").strip()
+                try:
+                    category = await SimilarCategoryConverter().convert(
+                        ctx, category
+                    )  # attempt to find a category again
+                except commands.BadArgument:
+                    category = None
 
-        if user.bot:
-            embed = discord.Embed(color=self.bot.error_color, description="Cannot start a thread with a bot.")
-            return await ctx.send(embed=embed, delete_after=3)
+            if isinstance(category, str):
+                category = None
 
-        exists = await self.bot.threads.find(recipient=user)
-        if exists:
-            embed = discord.Embed(
-                color=self.bot.error_color,
-                description="A thread for this user already " f"exists in {exists.channel.mention}.",
-            )
-            await ctx.channel.send(embed=embed, delete_after=3)
+        errors = []
+        for u in list(users):
+            if isinstance(u, discord.Role):
+                users += u.members
+                users.remove(u)
 
-        else:
-            thread = await self.bot.threads.create(
-                recipient=user,
-                creator=ctx.author,
-                category=category,
-                manual_trigger=manual_trigger,
-            )
-            if thread.cancelled:
+        for u in list(users):
+            exists = await self.bot.threads.find(recipient=u)
+            if exists:
+                errors.append(f"A thread for {u} already exists.")
+                if exists.channel:
+                    errors[-1] += f" in {exists.channel.mention}"
+                errors[-1] += "."
+                users.remove(u)
+            elif u.bot:
+                errors.append(f"{u} is a bot, cannot add to thread.")
+                users.remove(u)
+            elif await self.bot.is_blocked(u):
+                ref = f"{u.mention} is" if ctx.author != u else "You are"
+                errors.append(f"{ref} currently blocked from contacting {self.bot.user.name}.")
+                users.remove(u)
+
+        if len(users) > 5:
+            errors.append("Group conversations only support 5 users.")
+            users = []
+
+        if errors or not users:
+            if not users:
+                # no users left
+                title = "Thread not created"
+            else:
+                title = None
+
+            if manual_trigger:  # not react to contact
+                embed = discord.Embed(title=title, color=self.bot.error_color, description="\n".join(errors))
+                await ctx.send(embed=embed, delete_after=10)
+
+            if not users:
+                # end
                 return
 
-            if self.bot.config["dm_disabled"] in (DMDisabled.NEW_THREADS, DMDisabled.ALL_THREADS):
-                logger.info("Contacting user %s when Modmail DM is disabled.", user)
+        creator = ctx.author if manual_trigger else users[0]
 
-            if not silent and not self.bot.config.get("thread_contact_silently"):
-                if ctx.author.id == user.id:
-                    description = "You have opened a Modmail thread."
-                else:
-                    description = f"{ctx.author.name} has opened a Modmail thread."
+        thread = await self.bot.threads.create(
+            recipient=users[0],
+            creator=creator,
+            category=category,
+            manual_trigger=manual_trigger,
+        )
 
-                em = discord.Embed(
-                    title="New Thread",
-                    description=description,
-                    color=self.bot.main_color,
+        if thread.cancelled:
+            return
+
+        if self.bot.config["dm_disabled"] in (DMDisabled.NEW_THREADS, DMDisabled.ALL_THREADS):
+            logger.info("Contacting user %s when Modmail DM is disabled.", users[0])
+
+        if not silent and not self.bot.config.get("thread_contact_silently"):
+            if creator.id == users[0].id:
+                description = self.bot.config["thread_creation_self_contact_response"]
+            else:
+                description = self.bot.formatter.format(
+                    self.bot.config["thread_creation_contact_response"], creator=creator
                 )
-                if self.bot.config["show_timestamp"]:
-                    em.timestamp = datetime.utcnow()
-                em.set_footer(icon_url=ctx.author.avatar_url)
-                await user.send(embed=em)
 
-            embed = discord.Embed(
-                title="Created Thread",
-                description=f"Thread started by {ctx.author.mention} for {user.mention}.",
+            em = discord.Embed(
+                title=self.bot.config["thread_creation_contact_title"],
+                description=description,
                 color=self.bot.main_color,
             )
-            await thread.wait_until_ready()
-            await thread.channel.send(embed=embed)
+            if self.bot.config["show_timestamp"]:
+                em.timestamp = datetime.utcnow()
+            em.set_footer(text=f"{creator}", icon_url=creator.avatar_url)
 
-            if manual_trigger:
-                sent_emoji, _ = await self.bot.retrieve_emoji()
-                await self.bot.add_reaction(ctx.message, sent_emoji)
-                await asyncio.sleep(5)
-                await ctx.message.delete()
+            for u in users:
+                await u.send(embed=em)
+
+        embed = discord.Embed(
+            title="Created Thread",
+            description=f"Thread started by {creator.mention} for {', '.join(u.mention for u in users)}.",
+            color=self.bot.main_color,
+        )
+        await thread.wait_until_ready()
+
+        if users[1:]:
+            await thread.add_users(users[1:])
+
+        await thread.channel.send(embed=embed)
+
+        if manual_trigger:
+            sent_emoji, _ = await self.bot.retrieve_emoji()
+            await self.bot.add_reaction(ctx.message, sent_emoji)
+            await asyncio.sleep(5)
+            await ctx.message.delete()
 
     @commands.group(invoke_without_command=True)
     @checks.has_permissions(PermissionLevel.MODERATOR)
@@ -1433,15 +1838,19 @@ class Modmail(commands.Cog):
                 and message.embeds[0].footer.text
             ):
                 user_id = match_user_id(message.embeds[0].footer.text)
+                other_recipients = match_other_recipients(ctx.channel.topic)
+                for n, uid in enumerate(other_recipients):
+                    other_recipients[n] = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+
                 if user_id != -1:
                     recipient = self.bot.get_user(user_id)
                     if recipient is None:
                         self.bot.threads.cache[user_id] = thread = Thread(
-                            self.bot.threads, user_id, ctx.channel
+                            self.bot.threads, user_id, ctx.channel, other_recipients
                         )
                     else:
                         self.bot.threads.cache[user_id] = thread = Thread(
-                            self.bot.threads, recipient, ctx.channel
+                            self.bot.threads, recipient, ctx.channel, other_recipients
                         )
                     thread.ready = True
                     logger.info("Setting current channel's topic to User ID and created new thread.")
@@ -1463,7 +1872,7 @@ class Modmail(commands.Cog):
             )
             if len(users) == 1:
                 user = users.pop()
-                name = format_channel_name(self.bot, user, exclude_channel=ctx.channel)
+                name = self.bot.format_channel_name(user, exclude_channel=ctx.channel)
                 recipient = self.bot.get_user(user.id)
                 if user.id in self.bot.threads.cache:
                     thread = self.bot.threads.cache[user.id]
@@ -1481,11 +1890,18 @@ class Modmail(commands.Cog):
                             await thread.channel.send(embed=embed)
                         except discord.HTTPException:
                             pass
+
+                other_recipients = match_other_recipients(ctx.channel.topic)
+                for n, uid in enumerate(other_recipients):
+                    other_recipients[n] = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+
                 if recipient is None:
-                    self.bot.threads.cache[user.id] = thread = Thread(self.bot.threads, user_id, ctx.channel)
+                    self.bot.threads.cache[user.id] = thread = Thread(
+                        self.bot.threads, user_id, ctx.channel, other_recipients
+                    )
                 else:
                     self.bot.threads.cache[user.id] = thread = Thread(
-                        self.bot.threads, recipient, ctx.channel
+                        self.bot.threads, recipient, ctx.channel, other_recipients
                     )
                 thread.ready = True
                 logger.info("Setting current channel's topic to User ID and created new thread.")
